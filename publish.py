@@ -7,6 +7,7 @@ import paho.mqtt.client as paho
 from paho import mqtt
 from dotenv import load_dotenv
 import os
+import pytz
 
 load_dotenv()
 
@@ -103,6 +104,7 @@ def transform_gps_data(gps_data):
     time = sentence_parts[5]
     combined_date_time = f"{date} {time}"
     combined_date_time_formatted = datetime.strptime(combined_date_time, "%d%m%y %H%M%S.%f")
+    aware_combined_date_time_formatted = combined_date_time_formatted.replace(tzinfo=pytz.utc)
     speed_in_knots = float(sentence_parts[7])
                                 
     final_latitude = float(latitude_degrees) + (float(latitude_minutes) / 60)
@@ -113,7 +115,7 @@ def transform_gps_data(gps_data):
     if longitude_direction == 'W':
         final_longitude = -final_longitude
                     
-    final_datetime_in_utc = combined_date_time_formatted.isoformat()
+    final_datetime_in_utc = aware_combined_date_time_formatted.isoformat()
     final_speed_in_kmh = round(speed_in_knots * kmh_per_knot, 1)
     
     return {
