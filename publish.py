@@ -1,4 +1,5 @@
 # Import libraries
+import subprocess
 import RPi.GPIO as GPIO
 import serial
 import time
@@ -26,6 +27,13 @@ hive_password = os.getenv('hive_password')
 hive_cluster_url = os.getenv('hive_cluster_url')
 hive_port = int(os.getenv('hive_port'))
 
+# Video Settings
+rtmp_server_url = os.getenv('rtmp_server_url')
+video_width = 1280
+video_height = 720
+video_framerate = 24
+video_bitrate = "1000k"
+
 # Initialize serial connection & Clear input buffer of serial connection
 serial = serial.Serial(port=SERIAL_DEVICE, baudrate=SERIAL_BAUD_RATE)
 serial.flushInput()
@@ -34,23 +42,70 @@ serial.flushInput()
 def main():
     mqtt_client = system_setup()
     last_gps_fetch_time = time.time()
-    loopId = 0;
+    ffmpeg_process = None
+    stream = False
+    loopId = 0
     
-    while True:
-        motion_detected = get_motion_detected()
-        current_time = time.time()
-        
-        if current_time - last_gps_fetch_time >= publish_delay:
-            gps_position = get_gps_position()
+    libcamera_cmd = [
+        "libcamera-vid",
+        "-t", "0",
+        "--inline",
+        "--output", "-",
+    ]
+    
+    ffmpeg_cmd = [
+        "ffmpeg",
+        "-i", "pipe:",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-tune", "zerolatency",
+        "-b:v", video_bitrate,
+        "-maxrate", video_bitrate,
+        "-an",
+        "-bufsize", "500k",
+        "-vf", f"scale={video_width}:{video_height}",
+        "-r", str(video_framerate),
+        "-f", "flv",
+        f"{rtmp_server_url}/{identifier}"
+    ]
+    
+    try:
+        while True:
+            motion_detected = get_motion_detected()
+            current_time = time.time()
+            
+            if current_time - last_gps_fetch_time >= publish_delay:
+                gps_position = get_gps_position()
+                print('\n')
 
-            if motion_detected and gps_position:
-                print(f'{loopId}: Motion detected, emitting: {gps_position}')
-                publish_to_mqtt_broker(mqtt_client, str(gps_position))
-            else:
-                print(f'{loopId}: No motion detected, skipping emit')
-                
-            last_gps_fetch_time = current_time
-            loopId += 1
+                if motion_detected:
+                    if gps_position:
+                        print(f'{loopId}: Motion detected, GPS: {gps_position}')
+                        publish_to_mqtt_broker(mqtt_client, str(gps_position))
+                    else:
+                        print(f'{loopId}: Motion detected, GPS: Skipping')
+                        
+                    if not stream:
+                        print(f'{loopId}: Motion detected, VIDEO: Starting stream now')
+                        stream = True
+                        libcamera_process = subprocess.Popen(libcamera_cmd, stdout=subprocess.PIPE)
+                        ffmpeg_process = subprocess.Popen(ffmpeg_cmd, stdin=libcamera_process.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    else:
+                        print(f'{loopId}: Motion detected, VIDEO: Stream already on')               
+                else:
+                    print(f'{loopId}: No motion detected, GPS & VIDEO: Skipping')
+                    if stream:
+                        print(f'{loopId}: No motion detected, VIDEO: Stopping stream now')
+                        stream = False
+                        libcamera_process.terminate()
+                        ffmpeg_process.terminate()
+                        libcamera_process.wait()
+                        ffmpeg_process.wait()
+
+                last_gps_fetch_time = current_time
+                loopId += 1
+    except Exception as e:
+        print(f"An error occurred: {e}")
 
 
 # Returns True if motion detected from PIR sensor
@@ -194,3 +249,4 @@ def connect_to_mqtt_broker():
 
 # Run main method
 main()
+
