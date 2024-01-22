@@ -19,7 +19,7 @@ PIR_MOTION_PIN = 16
 kmh_per_knot = 1.85200
 
 # MQTT settings
-publish_delay = 10
+publish_delay = 5
 identifier = "1ZRG83"
 hive_username = os.getenv('hive_username')
 hive_password = os.getenv('hive_password')
@@ -34,20 +34,23 @@ serial.flushInput()
 def main():
     mqtt_client = system_setup()
     last_gps_fetch_time = time.time()
+    loopId = 0;
     
     while True:
         motion_detected = get_motion_detected()
+        current_time = time.time()
+        
+        if current_time - last_gps_fetch_time >= publish_delay:
+            gps_position = get_gps_position()
 
-        if motion_detected:
-            current_time = time.time()
-
-            # Check if 10 seconds have passed since the last GPS fetch
-            if current_time - last_gps_fetch_time >= publish_delay:
-                gps_position = get_gps_position()
+            if motion_detected and gps_position:
+                print(f'{loopId}: Motion detected, emitting: {gps_position}')
+                publish_to_mqtt_broker(mqtt_client, str(gps_position))
+            else:
+                print(f'{loopId}: No motion detected, skipping emit')
                 
-                if gps_position:
-                    publish_to_mqtt_broker(mqtt_client, str(gps_position))
-                    last_gps_fetch_time = current_time
+            last_gps_fetch_time = current_time
+            loopId += 1
 
 
 # Returns True if motion detected from PIR sensor
@@ -87,43 +90,46 @@ def transform_gps_data(gps_data):
     if ',,,,,,,' in gps_data:
         return {}
     
-    nmea_sentence = gps_data.split(':')[1].strip()
-    sentence_parts = nmea_sentence.split(',')
+    try:
+        nmea_sentence = gps_data.split(':')[1].strip()
+        sentence_parts = nmea_sentence.split(',')
 
-    latitude_degrees = sentence_parts[0][:2]
-    latitude_minutes_raw = sentence_parts[0][2:]
-    latitude_minutes = latitude_minutes_raw if latitude_minutes_raw else '0'
-    latitude_direction = sentence_parts[1]
+        latitude_degrees = sentence_parts[0][:2]
+        latitude_minutes_raw = sentence_parts[0][2:]
+        latitude_minutes = latitude_minutes_raw if latitude_minutes_raw else '0'
+        latitude_direction = sentence_parts[1]
 
-    longitude_degrees = sentence_parts[2][:3]
-    longitude_minutes_raw = sentence_parts[2][3:]
-    longitude_minutes = longitude_minutes_raw if longitude_minutes_raw else '0'
-    longitude_direction = sentence_parts[3]
-                
-    date = sentence_parts[4]
-    time = sentence_parts[5]
-    combined_date_time = f"{date} {time}"
-    combined_date_time_formatted = datetime.strptime(combined_date_time, "%d%m%y %H%M%S.%f")
-    aware_combined_date_time_formatted = combined_date_time_formatted.replace(tzinfo=pytz.utc)
-    speed_in_knots = float(sentence_parts[7])
-                                
-    final_latitude = float(latitude_degrees) + (float(latitude_minutes) / 60)
-    final_longitude = float(longitude_degrees) + (float(longitude_minutes) / 60)
-
-    if latitude_direction == 'S':
-        final_latitude = -final_latitude
-    if longitude_direction == 'W':
-        final_longitude = -final_longitude
+        longitude_degrees = sentence_parts[2][:3]
+        longitude_minutes_raw = sentence_parts[2][3:]
+        longitude_minutes = longitude_minutes_raw if longitude_minutes_raw else '0'
+        longitude_direction = sentence_parts[3]
                     
-    final_datetime_in_utc = aware_combined_date_time_formatted.isoformat()
-    final_speed_in_kmh = round(speed_in_knots * kmh_per_knot, 1)
-    
-    return {
-        "latitude": final_latitude,
-        "longitude": final_longitude,
-        "datetime": final_datetime_in_utc,
-        "speed": final_speed_in_kmh
-    }
+        date = sentence_parts[4]
+        time = sentence_parts[5]
+        combined_date_time = f"{date} {time}"
+        combined_date_time_formatted = datetime.strptime(combined_date_time, "%d%m%y %H%M%S.%f")
+        aware_combined_date_time_formatted = combined_date_time_formatted.replace(tzinfo=pytz.utc)
+        speed_in_knots = float(sentence_parts[7])
+                                    
+        final_latitude = float(latitude_degrees) + (float(latitude_minutes) / 60)
+        final_longitude = float(longitude_degrees) + (float(longitude_minutes) / 60)
+
+        if latitude_direction == 'S':
+            final_latitude = -final_latitude
+        if longitude_direction == 'W':
+            final_longitude = -final_longitude
+                        
+        final_datetime_in_utc = aware_combined_date_time_formatted.isoformat()
+        final_speed_in_kmh = round(speed_in_knots * kmh_per_knot, 1)
+        
+        return {
+            "latitude": final_latitude,
+            "longitude": final_longitude,
+            "datetime": final_datetime_in_utc,
+            "speed": final_speed_in_kmh
+        }
+    except:
+        return {}
                     
 
 # Sends AT command and returns array of GPS position information or empty array if module not ready
@@ -164,8 +170,8 @@ def on_connect(client, userdata, flags, rc, properties=None):
 
 
 # with this callback you can see if your publish was successful
-def on_publish(client, userdata, mid, properties=None):
-    print(f"mid (message id): {mid}")
+# def on_publish(client, userdata, mid, properties=None):
+#     print(f"mid (message id): {mid}")
 
 
 # Publishes a message to mqtt broker
@@ -182,7 +188,7 @@ def connect_to_mqtt_broker():
     client.username_pw_set(hive_username, hive_password)
     client.connect(hive_cluster_url, hive_port)
 
-    client.on_publish = on_publish
+    # client.on_publish = on_publish
     client.loop_start()
     return client
 
